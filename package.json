@@ -1,0 +1,34 @@
+{
+  "name": "user-service-cdk",
+  "version": "1.0.0",
+  "description": "AWS CDK User Management Service with Java Lambda and DynamoDB",
+  "bin": {
+    "user-service-cdk": "bin/app.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "build-lambda": "./scripts/build-lambda.sh"
+  },
+  "keywords": [
+    "aws",
+    "cdk",
+    "lambda",
+    "dynamodb",
+    "api-gateway"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "aws-cdk": "^2.120.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.120.0",
+    "constructs": "^10.3.0",
+    "source-map-support": "^0.5.21"
+  }
+}

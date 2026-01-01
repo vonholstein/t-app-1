@@ -1,0 +1,65 @@
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# Node.js
+node_modules
+*.js
+*.d.ts
+package-lock.json
+yarn.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Maven
+lambda/target/
+lambda/pom.xml.tag
+lambda/pom.xml.releaseBackup
+lambda/pom.xml.versionsBackup
+lambda/pom.xml.next
+lambda/release.properties
+lambda/dependency-reduced-pom.xml
+lambda/buildNumber.properties
+lambda/.mvn/timing.properties
+lambda/.mvn/wrapper/maven-wrapper.jar
+
+# Java
+*.class
+*.log
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+hs_err_pid*
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+out/
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+.cache/
