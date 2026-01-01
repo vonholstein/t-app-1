@@ -41,6 +41,14 @@ public class ResponseUtil {
         return error(404, message);
     }
 
+    public static APIGatewayProxyResponseEvent unauthorized(String message) {
+        return error(401, message);
+    }
+
+    public static APIGatewayProxyResponseEvent forbidden(String message) {
+        return error(403, message);
+    }
+
     public static APIGatewayProxyResponseEvent conflict(String message) {
         return error(409, message);
     }

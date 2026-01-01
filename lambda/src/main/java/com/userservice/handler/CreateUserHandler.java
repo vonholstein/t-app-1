@@ -5,8 +5,12 @@ import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.userservice.auth.AuthContext;
+import com.userservice.auth.AuthorizationUtil;
+import com.userservice.auth.UnauthorizedException;
 import com.userservice.model.CreateUserRequest;
 import com.userservice.model.User;
+import com.userservice.service.CognitoService;
 import com.userservice.util.ResponseUtil;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
@@ -19,11 +23,13 @@ public class CreateUserHandler implements RequestHandler<APIGatewayProxyRequestE
     private final DynamoDbClient dynamoDb;
     private final String tableName;
     private final ObjectMapper objectMapper;
+    private final CognitoService cognitoService;
 
     public CreateUserHandler() {
         this.dynamoDb = DynamoDbClient.builder().build();
         this.tableName = System.getenv("TABLE_NAME");
         this.objectMapper = new ObjectMapper();
+        this.cognitoService = new CognitoService();
     }
 
     @Override
@@ -31,6 +37,19 @@ public class CreateUserHandler implements RequestHandler<APIGatewayProxyRequestE
         context.getLogger().log("CreateUserHandler - Request received");
 
         try {
+            // Extract auth context (optional - endpoint is public for registration)
+            AuthContext authContext = null;
+            try {
+                authContext = AuthorizationUtil.extractAuthContext(event);
+            } catch (UnauthorizedException e) {
+                return ResponseUtil.unauthorized(e.getMessage());
+            }
+
+            // Check if user is allowed to create users
+            if (!AuthorizationUtil.canCreateUser(authContext)) {
+                return ResponseUtil.forbidden("You are not authorized to create users");
+            }
+
             // Parse request body
             String body = event.getBody();
             if (body == null || body.trim().isEmpty()) {
@@ -46,16 +65,31 @@ public class CreateUserHandler implements RequestHandler<APIGatewayProxyRequestE
                 return ResponseUtil.badRequest(e.getMessage());
             }
 
-            // Check if username already exists
+            // Check if authenticated user can create this specific username
+            if (!AuthorizationUtil.canCreateUsername(authContext, request.getUsername())) {
+                return ResponseUtil.forbidden("You can only create your own user entry");
+            }
+
+            // Check if username already exists in DynamoDB
             if (usernameExists(request.getUsername())) {
                 return ResponseUtil.conflict("Username '" + request.getUsername() + "' already exists");
+            }
+
+            context.getLogger().log("Creating Cognito user: " + request.getUsername());
+
+            // Create Cognito user FIRST
+            try {
+                cognitoService.createUser(request.getUsername(), request.getRole(), request.getPassword());
+            } catch (Exception e) {
+                context.getLogger().log("Error creating Cognito user: " + e.getMessage());
+                return ResponseUtil.internalServerError("Error creating authentication: " + e.getMessage());
             }
 
             // Generate UUID for userId
             String userId = UUID.randomUUID().toString();
             long currentTime = System.currentTimeMillis();
 
-            // Create user item
+            // Create user item in DynamoDB
             Map<String, AttributeValue> item = new HashMap<>();
             item.put("userId", AttributeValue.builder().s(userId).build());
             item.put("username", AttributeValue.builder().s(request.getUsername()).build());
@@ -63,15 +97,27 @@ public class CreateUserHandler implements RequestHandler<APIGatewayProxyRequestE
             item.put("createdAt", AttributeValue.builder().n(String.valueOf(currentTime)).build());
             item.put("updatedAt", AttributeValue.builder().n(String.valueOf(currentTime)).build());
 
-            // Put item in DynamoDB
-            PutItemRequest putItemRequest = PutItemRequest.builder()
-                    .tableName(tableName)
-                    .item(item)
-                    .build();
+            try {
+                // Put item in DynamoDB
+                PutItemRequest putItemRequest = PutItemRequest.builder()
+                        .tableName(tableName)
+                        .item(item)
+                        .build();
 
-            dynamoDb.putItem(putItemRequest);
+                dynamoDb.putItem(putItemRequest);
 
-            // Create response
+            } catch (Exception e) {
+                // Rollback: Delete Cognito user if DynamoDB creation fails
+                context.getLogger().log("DynamoDB creation failed, rolling back Cognito user: " + e.getMessage());
+                try {
+                    cognitoService.deleteUser(request.getUsername());
+                } catch (Exception rollbackEx) {
+                    context.getLogger().log("Error rolling back Cognito user: " + rollbackEx.getMessage());
+                }
+                throw new RuntimeException("Error creating user in database: " + e.getMessage());
+            }
+
+            // Create response (without password)
             User user = new User(userId, request.getUsername(), request.getRole(), currentTime, currentTime);
 
             context.getLogger().log("User created successfully: " + userId);

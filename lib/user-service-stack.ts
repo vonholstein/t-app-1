@@ -3,6 +3,8 @@ import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'path';
 
 export class UserServiceStack extends cdk.Stack {
@@ -34,6 +36,42 @@ export class UserServiceStack extends cdk.Stack {
     });
 
     // ========================================
+    // Cognito User Pool
+    // ========================================
+    const userPool = new cognito.UserPool(this, 'UserServiceUserPool', {
+      userPoolName: 'UserServiceUserPool',
+      selfSignUpEnabled: true,
+      signInAliases: {
+        username: true,
+        email: false,
+      },
+      autoVerify: { email: false },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+      accountRecovery: cognito.AccountRecovery.NONE,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      customAttributes: {
+        role: new cognito.StringAttribute({ mutable: true }),
+      },
+    });
+
+    // Create User Pool Client
+    const userPoolClient = userPool.addClient('UserServiceClient', {
+      userPoolClientName: 'UserServiceWebClient',
+      authFlows: {
+        userPassword: true,
+        userSrp: true,
+      },
+      generateSecret: false,
+      preventUserExistenceErrors: true,
+    });
+
+    // ========================================
     // Lambda Functions
     // ========================================
     const lambdaCodePath = path.join(__dirname, '../lambda/target/user-service-lambda.jar');
@@ -46,6 +84,9 @@ export class UserServiceStack extends cdk.Stack {
       memorySize: 512,
       environment: {
         TABLE_NAME: usersTable.tableName,
+        USER_POOL_ID: userPool.userPoolId,
+        USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
+        AWS_REGION: this.region,
       },
     };
 
@@ -90,6 +131,29 @@ export class UserServiceStack extends cdk.Stack {
     usersTable.grantReadWriteData(deleteUserFunction);
 
     // ========================================
+    // Grant Cognito Permissions to Lambdas
+    // ========================================
+    // CreateUserFunction needs to create Cognito users
+    createUserFunction.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminSetUserPassword',
+        'cognito-idp:AdminUpdateUserAttributes',
+      ],
+      resources: [userPool.userPoolArn],
+    }));
+
+    // DeleteUserFunction needs to delete Cognito users
+    deleteUserFunction.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cognito-idp:AdminDeleteUser',
+      ],
+      resources: [userPool.userPoolArn],
+    }));
+
+    // ========================================
     // API Gateway
     // ========================================
     const api = new apigateway.RestApi(this, 'UserServiceApi', {
@@ -115,6 +179,17 @@ export class UserServiceStack extends cdk.Stack {
       },
     });
 
+    // Create Cognito Authorizer
+    const cognitoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(
+      this,
+      'UserServiceAuthorizer',
+      {
+        cognitoUserPools: [userPool],
+        authorizerName: 'UserServiceCognitoAuthorizer',
+        identitySource: 'method.request.header.Authorization',
+      }
+    );
+
     // ========================================
     // API Resources and Methods
     // ========================================
@@ -122,7 +197,7 @@ export class UserServiceStack extends cdk.Stack {
     // /users resource
     const usersResource = api.root.addResource('users');
 
-    // POST /users - Create user
+    // POST /users - Create user (PUBLIC - no authorizer for registration)
     usersResource.addMethod(
       'POST',
       new apigateway.LambdaIntegration(createUserFunction, {
@@ -130,31 +205,43 @@ export class UserServiceStack extends cdk.Stack {
       })
     );
 
-    // GET /users - List all users
+    // GET /users - List all users (PROTECTED - requires authentication)
     usersResource.addMethod(
       'GET',
       new apigateway.LambdaIntegration(listUsersFunction, {
         proxy: true,
-      })
+      }),
+      {
+        authorizer: cognitoAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      }
     );
 
     // /users/{userId} resource
     const userResource = usersResource.addResource('{userId}');
 
-    // GET /users/{userId} - Get user by ID
+    // GET /users/{userId} - Get user by ID (PROTECTED - requires authentication)
     userResource.addMethod(
       'GET',
       new apigateway.LambdaIntegration(getUserFunction, {
         proxy: true,
-      })
+      }),
+      {
+        authorizer: cognitoAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      }
     );
 
-    // DELETE /users/{userId} - Delete user
+    // DELETE /users/{userId} - Delete user (PROTECTED - requires authentication)
     userResource.addMethod(
       'DELETE',
       new apigateway.LambdaIntegration(deleteUserFunction, {
         proxy: true,
-      })
+      }),
+      {
+        authorizer: cognitoAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      }
     );
 
     // ========================================
@@ -190,6 +277,18 @@ export class UserServiceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DeleteUserFunctionArn', {
       value: deleteUserFunction.functionArn,
       description: 'Delete User Lambda ARN',
+    });
+
+    new cdk.CfnOutput(this, 'UserPoolId', {
+      value: userPool.userPoolId,
+      description: 'Cognito User Pool ID',
+      exportName: 'UserServiceUserPoolId',
+    });
+
+    new cdk.CfnOutput(this, 'UserPoolClientId', {
+      value: userPoolClient.userPoolClientId,
+      description: 'Cognito User Pool Client ID',
+      exportName: 'UserServiceUserPoolClientId',
     });
   }
 }

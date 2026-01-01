@@ -4,6 +4,9 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+import com.userservice.auth.AuthContext;
+import com.userservice.auth.AuthorizationUtil;
+import com.userservice.auth.UnauthorizedException;
 import com.userservice.model.User;
 import com.userservice.util.ResponseUtil;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -28,6 +31,22 @@ public class ListUsersHandler implements RequestHandler<APIGatewayProxyRequestEv
         context.getLogger().log("ListUsersHandler - Request received");
 
         try {
+            // Extract auth context (REQUIRED for this endpoint)
+            AuthContext authContext;
+            try {
+                authContext = AuthorizationUtil.extractAuthContext(event);
+                if (authContext == null) {
+                    return ResponseUtil.unauthorized("Authentication required");
+                }
+            } catch (UnauthorizedException e) {
+                return ResponseUtil.unauthorized(e.getMessage());
+            }
+
+            // Check read permission (all authenticated users can list)
+            if (!AuthorizationUtil.canReadUsers(authContext)) {
+                return ResponseUtil.forbidden("You are not authorized to list users");
+            }
+
             // Get pagination parameters from query string
             Map<String, String> queryParams = event.getQueryStringParameters();
             int limit = DEFAULT_LIMIT;
@@ -46,7 +65,7 @@ public class ListUsersHandler implements RequestHandler<APIGatewayProxyRequestEv
                     }
                 }
 
-                // Parse lastEvaluatedKey (simple implementation - in production you'd want to encode this)
+                // Parse lastEvaluatedKey
                 if (queryParams.containsKey("lastEvaluatedKey")) {
                     String lastKey = queryParams.get("lastEvaluatedKey");
                     exclusiveStartKey = new HashMap<>();

@@ -4,6 +4,9 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+import com.userservice.auth.AuthContext;
+import com.userservice.auth.AuthorizationUtil;
+import com.userservice.auth.UnauthorizedException;
 import com.userservice.model.User;
 import com.userservice.util.ResponseUtil;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -27,6 +30,17 @@ public class GetUserHandler implements RequestHandler<APIGatewayProxyRequestEven
         context.getLogger().log("GetUserHandler - Request received");
 
         try {
+            // Extract auth context (REQUIRED for this endpoint)
+            AuthContext authContext;
+            try {
+                authContext = AuthorizationUtil.extractAuthContext(event);
+                if (authContext == null) {
+                    return ResponseUtil.unauthorized("Authentication required");
+                }
+            } catch (UnauthorizedException e) {
+                return ResponseUtil.unauthorized(e.getMessage());
+            }
+
             // Get userId from path parameters
             Map<String, String> pathParameters = event.getPathParameters();
             if (pathParameters == null || !pathParameters.containsKey("userId")) {
@@ -36,6 +50,11 @@ public class GetUserHandler implements RequestHandler<APIGatewayProxyRequestEven
             String userId = pathParameters.get("userId");
             if (userId == null || userId.trim().isEmpty()) {
                 return ResponseUtil.badRequest("userId cannot be empty");
+            }
+
+            // Check read permission (all authenticated users can read)
+            if (!AuthorizationUtil.canReadUser(authContext, userId)) {
+                return ResponseUtil.forbidden("You are not authorized to view users");
             }
 
             context.getLogger().log("Getting user: " + userId);

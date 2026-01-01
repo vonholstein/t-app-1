@@ -1,6 +1,6 @@
 # User Management Service
 
-A serverless user management service built with AWS CDK, API Gateway, Lambda (Java 17), and DynamoDB.
+A serverless user management service built with AWS CDK, API Gateway, Lambda (Java 17), DynamoDB, and Cognito for authentication.
 
 ## Architecture
 
@@ -8,32 +8,74 @@ A serverless user management service built with AWS CDK, API Gateway, Lambda (Ja
 - **Compute**: AWS Lambda (Java 17)
 - **API**: AWS API Gateway (REST API)
 - **Database**: Amazon DynamoDB
+- **Authentication**: AWS Cognito User Pools
 - **Build Tool**: Maven
 
 ## Features
 
-- Create users with username and role
+- AWS Cognito authentication with JWT tokens
+- Role-based authorization (guest, user, superuser, globaladmin)
+- Create users with username, password, and role
 - Get user details by ID
 - List all users with pagination
-- Delete users
+- Delete users with role-based permissions
 - Username uniqueness enforcement
 - CORS enabled for browser access
 - Comprehensive error handling
+- Secure password storage in Cognito
+
+## Authentication & Authorization
+
+### Authentication Method
+This service uses **AWS Cognito User Pools** with JWT tokens for authentication.
+
+- **Public Endpoint**: `POST /users` (for user registration)
+- **Protected Endpoints**: All other endpoints require a valid JWT token in the `Authorization` header
+
+### Authorization Roles
+
+| Role | POST /users | GET /users | GET /users/{id} | DELETE /users/{id} |
+|------|-------------|------------|-----------------|---------------------|
+| **guest** | Public registration | Read all | Read any | ❌ Cannot delete |
+| **user** | Own entry only | Read all | Read any | ❌ Cannot delete |
+| **superuser** | Create any | Read all | Read any | ✅ Own entry only |
+| **globaladmin** | Create any | Read all | Read any | ✅ Delete any |
+
+### Getting a JWT Token
+
+After registering, authenticate to get a JWT token:
+
+```bash
+aws cognito-idp initiate-auth \
+  --auth-flow USER_PASSWORD_AUTH \
+  --client-id YOUR_USER_POOL_CLIENT_ID \
+  --auth-parameters USERNAME=youruser,PASSWORD=YourPass123!
+```
+
+Extract the `IdToken` from the response and use it in the `Authorization` header:
+```
+Authorization: Bearer YOUR_JWT_TOKEN
+```
 
 ## API Endpoints
 
-### 1. Create User
+### 1. Create User (PUBLIC)
 **POST** `/users`
+
+**Authentication**: None required (public registration)
 
 Request body:
 ```json
 {
   "username": "john",
+  "password": "SecurePass123!",
   "role": "user"
 }
 ```
 
 Valid roles: `guest`, `user`, `superuser`, `globaladmin`
+
+**Note**: Password must be at least 8 characters with uppercase, lowercase, digits, and symbols.
 
 Response (201 Created):
 ```json
@@ -46,8 +88,15 @@ Response (201 Created):
 }
 ```
 
-### 2. Get User
+### 2. Get User (PROTECTED)
 **GET** `/users/{userId}`
+
+**Authentication**: Required - Bearer token
+
+Headers:
+```
+Authorization: Bearer YOUR_JWT_TOKEN
+```
 
 Response (200 OK):
 ```json
@@ -60,8 +109,15 @@ Response (200 OK):
 }
 ```
 
-### 3. List Users
+### 3. List Users (PROTECTED)
 **GET** `/users?limit=20&lastEvaluatedKey={key}`
+
+**Authentication**: Required - Bearer token
+
+Headers:
+```
+Authorization: Bearer YOUR_JWT_TOKEN
+```
 
 Query parameters:
 - `limit` (optional): Number of users to return (1-100, default: 20)
@@ -84,8 +140,16 @@ Response (200 OK):
 }
 ```
 
-### 4. Delete User
+### 4. Delete User (PROTECTED)
 **DELETE** `/users/{userId}`
+
+**Authentication**: Required - Bearer token
+**Authorization**: Requires `superuser` (own entry only) or `globaladmin` role
+
+Headers:
+```
+Authorization: Bearer YOUR_JWT_TOKEN
+```
 
 Response (200 OK):
 ```json
@@ -106,6 +170,8 @@ All errors follow this format:
 
 HTTP Status Codes:
 - `400` - Bad Request (invalid input)
+- `401` - Unauthorized (missing or invalid authentication token)
+- `403` - Forbidden (authenticated but insufficient permissions)
 - `404` - Not Found (user doesn't exist)
 - `409` - Conflict (username already exists)
 - `500` - Internal Server Error
@@ -196,36 +262,74 @@ UserServiceStack.ApiUrl = https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com
 
 ## Testing the API
 
-Save the API URL from the deployment output:
+Save the deployment outputs:
 ```bash
 export API_URL="https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/prod"
+export USER_POOL_CLIENT_ID="your-client-id-from-cdk-output"
 ```
 
-### Create a user
+### Step 1: Register a New User (Public)
 ```bash
 curl -X POST $API_URL/users \
   -H "Content-Type: application/json" \
-  -d '{"username":"alice","role":"user"}'
+  -d '{
+    "username": "alice",
+    "password": "SecurePass123!",
+    "role": "user"
+  }'
 ```
 
-### Get a user
+### Step 2: Authenticate and Get JWT Token
 ```bash
-curl $API_URL/users/{userId}
+aws cognito-idp initiate-auth \
+  --auth-flow USER_PASSWORD_AUTH \
+  --client-id $USER_POOL_CLIENT_ID \
+  --auth-parameters USERNAME=alice,PASSWORD=SecurePass123!
 ```
 
-### List all users
+Extract the `IdToken` from the JSON response and save it:
 ```bash
-curl $API_URL/users
+export JWT_TOKEN="eyJraWQiOiJ..."  # Your IdToken from above
 ```
 
-### List with pagination
+### Step 3: Use Protected Endpoints
+
+Get a user (requires authentication):
 ```bash
-curl "$API_URL/users?limit=10"
+curl $API_URL/users/{userId} \
+  -H "Authorization: Bearer $JWT_TOKEN"
 ```
 
-### Delete a user
+List all users (requires authentication):
 ```bash
-curl -X DELETE $API_URL/users/{userId}
+curl $API_URL/users \
+  -H "Authorization: Bearer $JWT_TOKEN"
+```
+
+List with pagination:
+```bash
+curl "$API_URL/users?limit=10" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+```
+
+Delete a user (requires superuser or globaladmin role):
+```bash
+curl -X DELETE $API_URL/users/{userId} \
+  -H "Authorization: Bearer $JWT_TOKEN"
+```
+
+### Step 4: Test Authorization
+
+Try to access a protected endpoint without a token (should return 401):
+```bash
+curl $API_URL/users  # Returns 401 Unauthorized
+```
+
+Try to delete a user as a regular user (should return 403):
+```bash
+# Create a user with 'user' role, authenticate, then try to delete
+curl -X DELETE $API_URL/users/{userId} \
+  -H "Authorization: Bearer $JWT_TOKEN"  # Returns 403 Forbidden
 ```
 
 ## Development
