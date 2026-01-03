@@ -5,6 +5,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as path from 'path';
 
 export class UserServiceStack extends cdk.Stack {
@@ -72,6 +73,18 @@ export class UserServiceStack extends cdk.Stack {
     });
 
     // ========================================
+    // S3 Bucket for File Storage
+    // ========================================
+    const filesBucket = new s3.Bucket(this, 'FilesBucket', {
+      bucketName: 'trent-app-1-bucket',
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: false,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // ========================================
     // Lambda Functions
     // ========================================
     const lambdaCodePath = path.join(__dirname, '../lambda/target/user-service-lambda.jar');
@@ -87,6 +100,7 @@ export class UserServiceStack extends cdk.Stack {
         USER_POOL_ID: userPool.userPoolId,
         USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
         AWS_REGION: this.region,
+        BUCKET_NAME: filesBucket.bucketName,
       },
     };
 
@@ -122,6 +136,16 @@ export class UserServiceStack extends cdk.Stack {
       description: 'Delete a user',
     });
 
+    // Upload File Lambda
+    const uploadFileFunction = new lambda.Function(this, 'UploadFileFunction', {
+      ...commonLambdaProps,
+      functionName: 'UserService-UploadFile',
+      handler: 'com.userservice.handler.UploadFileHandler::handleRequest',
+      description: 'Upload file to S3',
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 1024,
+    });
+
     // ========================================
     // Grant DynamoDB Permissions to Lambdas
     // ========================================
@@ -154,11 +178,18 @@ export class UserServiceStack extends cdk.Stack {
     }));
 
     // ========================================
+    // Grant S3 Permissions to Lambdas
+    // ========================================
+    filesBucket.grantPut(uploadFileFunction);
+    filesBucket.grantRead(uploadFileFunction);
+
+    // ========================================
     // API Gateway
     // ========================================
     const api = new apigateway.RestApi(this, 'UserServiceApi', {
       restApiName: 'User Service API',
       description: 'API for User Management Service',
+      binaryMediaTypes: ['*/*'],
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: apigateway.Cors.ALL_METHODS,
@@ -244,6 +275,23 @@ export class UserServiceStack extends cdk.Stack {
       }
     );
 
+    // /files resource
+    const filesResource = api.root.addResource('files');
+    const fileResource = filesResource.addResource('{filename}');
+
+    // PUT /files/{filename} - Upload file (PROTECTED - requires authentication)
+    fileResource.addMethod(
+      'PUT',
+      new apigateway.LambdaIntegration(uploadFileFunction, {
+        proxy: true,
+        contentHandling: apigateway.ContentHandling.CONVERT_TO_BINARY,
+      }),
+      {
+        authorizer: cognitoAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      }
+    );
+
     // ========================================
     // Stack Outputs
     // ========================================
@@ -289,6 +337,17 @@ export class UserServiceStack extends cdk.Stack {
       value: userPoolClient.userPoolClientId,
       description: 'Cognito User Pool Client ID',
       exportName: 'UserServiceUserPoolClientId',
+    });
+
+    new cdk.CfnOutput(this, 'UploadFileFunctionArn', {
+      value: uploadFileFunction.functionArn,
+      description: 'Upload File Lambda ARN',
+    });
+
+    new cdk.CfnOutput(this, 'FilesBucketName', {
+      value: filesBucket.bucketName,
+      description: 'S3 Bucket for file storage',
+      exportName: 'UserServiceFilesBucketName',
     });
   }
 }
